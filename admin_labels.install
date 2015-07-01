@@ -9,6 +9,7 @@
  */
 function admin_labels_install() {
   module_load_include('module', 'admin_labels');
+  admin_labels_rebuild_label_types();
   admin_labels_rebuild_menu_link_preferred_label_assignments();
 }
 
