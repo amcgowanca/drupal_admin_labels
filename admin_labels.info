@@ -1,0 +1,5 @@
+name = Administrative Labels
+description = Provides an API for associating labels with (primarily UI representation for easy data recognition) content and menu links.
+core = 7.x
+version = 7.x-1.0
+package = admin_labels

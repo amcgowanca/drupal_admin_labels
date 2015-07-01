@@ -1,0 +1,500 @@
+<?php
+/**
+ * @file
+ * admin_labels.module
+ */
+
+/**
+ * Denotes the object type for menu links in {admin_labels_assigned_labels}.
+ */
+define('ADMIN_LABELS_MENU_LINK_TYPE_NAME', 'menu-link');
+
+/**
+ * Implements hook_flush_caches().
+ */
+function admin_labels_flush_caches() {
+  admin_labels_rebuild_label_types(FALSE);
+  return array();
+}
+
+/**
+ * Implements hook_theme().
+ */
+function admin_labels_theme() {
+  return array(
+    'admin_labels_label' => array(
+      'variables' => array(
+        'label' => NULL,
+      ),
+      'file' => 'admin_labels.theme.inc',
+    ),
+  );
+}
+
+/**
+ * Implements hook_entity_delete().
+ */
+function admin_labels_entity_delete($entity, $entity_type) {
+  list($entity_id) = entity_extract_ids($entity_type, $entity);
+  admin_labels_label_assigment_delete($entity_type, $entity_id);
+}
+
+/**
+ * Implements hook_menu_link_insert().
+ */
+function admin_labels_menu_link_insert($link) {
+  if ($label = admin_labels_label_type('menu_link_preferred')) {
+    if ($preferred_link = _admin_labels_menu_link_get_preferred_link($link['router_path'], $link['link_path'], $link['menu_name'])) {
+      if ($link['mlid'] == $preferred_link['mlid']) {
+        admin_labels_label_assign(ADMIN_LABELS_MENU_LINK_TYPE_NAME, $link['mlid'], $label);
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_menu_link_delete().
+ */
+function admin_labels_menu_link_delete($link) {
+  admin_labels_label_assigment_delete(ADMIN_LABELS_MENU_LINK_TYPE_NAME, $link['mlid']);
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function admin_labels_form_alter(&$form, &$form_state, $form_id) {
+  switch ($form_id) {
+    case 'menu_overview_form':
+      _admin_labels_form_menu_overview_form_alter($form, $form_state);
+      break;
+  }
+}
+
+/**
+ * Implements hook_admin_labels_label_types().
+ */
+function admin_labels_admin_labels_label_types() {
+  return array(
+    'menu_link_preferred' => array(
+      'text' => t('Preferred'),
+    ),
+  );
+}
+
+/**
+ * Retrieves an array of all label types.
+ *
+ * @param bool $reset
+ *   A boolean indicating if the static cache should be reset. Default is FALSE.
+ *
+ * @return array
+ *   Returns an array keyed by label machine name representing all labels.
+ */
+function &admin_labels_label_types($reset = FALSE) {
+  $static_fast_cache = &drupal_static(__FUNCTION__, array());
+  if (empty($static_fast_cache) || $reset) {
+    $query = db_select('admin_labels_types', 'lt')
+      ->fields('lt')
+      ->execute();
+    while ($row = $query->fetchObject()) {
+      $static_fast_cache[$row->type] = $row;
+    }
+  }
+  return $static_fast_cache;
+}
+
+/**
+ * Retrieves a single label object.
+ *
+ * @param string $type_name
+ *   The label machine name to retrieve.
+ * @param bool $reset
+ *   A boolean indicating if the static cache should be reset. Default is FALSE.
+ *
+ * @return object
+ *   The label object if it exists, otherwise returns NULL.
+ */
+function admin_labels_label_type($type_name, $reset = FALSE) {
+  $label_types = &admin_labels_label_types($reset);
+  return isset($label_types[$type_name]) ? $label_types[$type_name] : NULL;
+}
+
+/**
+ * Assigns a label to a particular object.
+ *
+ * @param string $type
+ *   A string representation of the object type (e.g. node).
+ * @param int $identifier
+ *   The unique serial identifier of the object (e.g. a node's nid).
+ * @param object $label
+ *   The label object to assign.
+ *
+ * @throws Exception
+ *   Throws an exception caught.
+ *
+ * @see hook_admin_labels_label_assigned().
+ */
+function admin_labels_label_assign($type, $identifier, $label) {
+  if (!admin_labels_is_assigned_label($type, $identifier, $label)) {
+    try {
+      db_insert('admin_labels_assigned_labels')
+        ->fields(array(
+          'created' => REQUEST_TIME,
+          'lid' => $label->lid,
+          'type' => $type,
+          'identifier' => $identifier,
+        ))
+        ->execute();
+      module_invoke_all('admin_labels_label_assigned', $type, $identifier, $label);
+    } catch (Exception $exception) {
+      throw $exception;
+    }
+  }
+}
+
+/**
+ * Retrieves all assigned labels for a particular object.
+ *
+ * @param string $type
+ *   The object type identifier (e.g. node).
+ * @param int $identifier
+ *   The unique serial identifier of the object (e.g. a node's nid).
+ *
+ * @return array
+ *   Returns all assigned labels.
+ */
+function admin_labels_assigned_labels($type, $identifier) {
+  $static_fast_cache = &drupal_static(__FUNCTION__, array());
+  if (!isset($static_fast_cache[$type])) {
+    $static_fast_cache[$type] = array();
+  }
+
+  if (!isset($static_fast_cache[$type][$identifier])) {
+    $assigned_labels = array();
+    $static_fast_cache[$type][$identifier] = FALSE;
+
+    $query = db_select('admin_labels_assigned_labels', 'al')
+      ->condition('al.type', $type)
+      ->condition('al.identifier', $identifier);
+    $query->join('admin_labels_types', 'lt', 'al.lid = lt.lid');
+    $query = $query->fields('lt')
+      ->execute();
+    while ($row = $query->fetchObject()) {
+      $assigned_labels[$row->lid] = $row;
+    }
+
+    if (!empty($assigned_labels)) {
+      $static_fast_cache[$type][$identifier] = $assigned_labels;
+    }
+  }
+  return $static_fast_cache[$type][$identifier];
+}
+
+/**
+ * Tests if a particular object has a particular label assigned.
+ *
+ * @param string $type
+ *   The object type identifier (e.g. node).
+ * @param int $identifier
+ *   The unique serial identifier of the object (e.g. a node's nid).
+ * @param object $label
+ *   The label object to test for.
+ *
+ * @return bool
+ *   Returns a boolean TRUE if the label is already assigned, otherwise FALSE.
+ */
+function admin_labels_is_assigned_label($type, $identifier, $label) {
+  return (bool) db_query_range("SELECT 1 FROM {admin_labels_assigned_labels} WHERE type = :type AND identifier = :id AND lid = :lid", 0, 1, array(':type' => $type, ':id' => $identifier, ':lid' => $label->lid))->fetchField();
+}
+
+/**
+ * Deletes all label assignments for a particular object.
+ *
+ * @param string $type
+ *   The object type identifier (e.g. node).
+ * @param int $identifier
+ *   The unique serial identifier of the object (e.g. a node's nid).
+ * @param object $label
+ *   The label object to delete specifically. Default is NULL which will delete
+ *   all possible labels assigned to the object.
+ *
+ * @throws Exception
+ *   Throws an caught exception.
+ *
+ * @see hook_admin_labels_label_assignment_deleted().
+ */
+function admin_labels_label_assigment_delete($type, $identifier, $label = NULL) {
+  if ($assigned_labels = admin_labels_assigned_labels($type, $identifier)) {
+    if (!empty($label) && isset($assigned_labels[$type][$identifier][$label->lid])) {
+      $labels = array($label->lid => $label);
+    }
+    else {
+      $labels = $assigned_labels;
+    }
+
+    try {
+      db_delete('admin_labels_assigned_labels')
+        ->condition('type', $type)
+        ->condition('identifier', $identifier)
+        ->condition('lid', array_keys($labels), 'IN')
+        ->execute();
+      foreach ($assigned_labels as $label) {
+        module_invoke_all('admin_labels_label_assignment_deleted', $type, $identifier, $label);
+      }
+    }
+    catch (Exception $exception) {
+      throw $exception;
+    }
+  }
+}
+
+/**
+ * Delete all label assignments for a specified label object.
+ *
+ * @param object $label
+ *   The label object to delete all assignments for.
+ *
+ * @throws Exception
+ *   Throws an exception caught.
+ *
+ * @see hook_admin_labels_label_assignment_deleted().
+ */
+function admin_labels_label_assignment_delete_by_label($label) {
+  try {
+    $assigned_labels = array();
+    $query = db_select('admin_labels_assigned_labels', 'la')
+      ->fields('la', array('type', 'identifier'))
+      ->condition('lid', $label->lid)
+      ->execute();
+    while ($row = $query->fetchObject()) {
+      $assigned_labels[] = $row;
+    }
+
+    if (!empty($assigned_labels)) {
+      db_delete('admin_labels_assigned_labels')
+        ->condition('lid', $label->lid)
+        ->execute();
+      foreach ($assigned_labels as $assigned) {
+        module_invoke_all('admin_labels_label_assignment_deleted', $assigned->type, $assigned->identifier, $label);
+      }
+    }
+  }
+  catch (Exception $exception) {
+    throw $exception;
+  }
+}
+
+/**
+ * Rebuilds the label type definitions and deletes any labels that don't exist.
+ *
+ * @param bool $flush_cache
+ *   A boolean to indicating if a cache flush should occur. Default FALSE.
+ *
+ * @throws Exception
+ *   Throws any exception caught.
+ */
+function admin_labels_rebuild_label_types($flush_cache = FALSE) {
+  static $has_been_rebuilt = FALSE;
+
+  if ($has_been_rebuilt) {
+    return;
+  }
+
+  $label_types = array();
+  foreach (module_implements('admin_labels_label_types') as $module) {
+    $function = $module . '_admin_labels_label_types';
+    $types = $function();
+    if (is_array($types) && !empty($types)) {
+      foreach ($types as $machine_name => $info) {
+        $info = (object) $info;
+
+        if (empty($info->text) || !is_string($machine_name)) {
+          continue;
+        }
+
+        $info->type = $machine_name;
+        $info->module = $module;
+        $label_types[$info->type] = $info;
+      }
+    }
+  }
+
+  $existing_label_types = admin_labels_label_types(TRUE);
+
+  try {
+    foreach ($label_types as $label_type => $label) {
+      if (isset($existing_label_types[$label_type])) {
+        $query = db_update('admin_labels_types')
+          ->condition('lid', $existing_label_types[$label_type]->lid);
+      } else {
+        $query = db_insert('admin_labels_types');
+      }
+
+      $query = $query->fields(array(
+        'type' => $label->type,
+        'text' => $label->text,
+        'module' => $label->module,
+      ))->execute();
+    }
+
+    $labels_to_delete = array();
+    $query = db_select('admin_labels_types', 'lt')
+      ->fields('lt', array('lid', 'type'))
+      ->condition('lt.type', array_keys($label_types), 'NOT IN')
+      ->execute();
+    while ($row = $query->fetchObject()) {
+      $labels_to_delete[$row->lid] = $row->type;
+    }
+
+    if (!empty($labels_to_delete)) {
+      foreach ($labels_to_delete as $label) {
+        admin_labels_label_assignment_delete_by_label($label);
+      }
+
+      db_delete('admin_labels_types')
+        ->condition('type', array_values($labels_to_delete), 'IN')
+        ->execute();
+    }
+  }
+  catch (Exception $exception) {
+    throw $exception;
+  }
+
+  drupal_static_reset('admin_labels_label_types');
+  drupal_static_reset('admin_labels_assigned_labels');
+
+  $has_been_rebuilt = TRUE;
+
+  if ($flush_cache) {
+    drupal_flush_all_caches();
+  }
+}
+
+/**
+ * Rebuilds the preferred menu link label assignment for all menu links.
+ *
+ * @param string $router_path
+ *   The router path (e.g. node/%) to rebuild assignments for.
+ */
+function admin_labels_rebuild_menu_link_preferred_label_assignments($router_path = 'node/%') {
+  static $static_fast_cache = array();
+  if (!isset($static_fast_cache[$router_path])) {
+    if ($label = admin_labels_label_type('menu_link_preferred')) {
+      $preferred_links = _admin_labels_menu_link_get_preferred_link($router_path, NULL, NULL);
+      foreach ($preferred_links as $link_path => $menu_links) {
+        foreach ($menu_links as $menu_name => $link) {
+          admin_labels_label_assign('menu-link', $link['mlid'], $label);
+        }
+      }
+    }
+    $static_fast_cache[$router_path] = TRUE;
+  }
+}
+
+/**
+ * Form alter callback for the `menu_overview_form`.
+ */
+function _admin_labels_form_menu_overview_form_alter(&$form, &$form_state) {
+  foreach (element_children($form) as $key) {
+    $link_item = $form[$key]['#item'];
+    if ($assigned_labels = admin_labels_assigned_labels(ADMIN_LABELS_MENU_LINK_TYPE_NAME, $link_item['mlid'])) {
+      $label_markup = array();
+      foreach ($assigned_labels as $label) {
+        $label_markup[] = theme('admin_labels_label', array('label' => $label));
+      }
+      // TODO: Determine best approach for handling this.
+      $form[$key]['title']['#markup'] .= ' ' . implode(' ', $label_markup);
+    }
+  }
+}
+
+/**
+ * Retrieves the preferred link(s) for a specified router path, link and menu.
+ *
+ * @param string $router_path
+ *   The router path to retrieve preferred links for (e.g. node/%).
+ * @param string $link_path
+ *   The common path to retrieve the preferred link item for (e.g. node/1).
+ *   Default is NULL, will query for all preferred links with this link path.
+ * @param string $selected_menu_name
+ *   The menu name to retrieve the preferred link from. Default NULL, will
+ *   return an array of preferred links for all links with the $link_path.
+ *
+ * @return array
+ *   Returns an array representing a set of preferred links and or a single
+ *   link item which is fully translated. Will return FALSE if no preferred
+ *   links exist with the specified parameters.
+ */
+function _admin_labels_menu_link_get_preferred_link($router_path, $link_path = NULL, $selected_menu_name = NULL) {
+  global $user;
+
+  // Do `_menu_translate()` performing access checks, we want to ensure that
+  // we bypass and are fully capable of having access to the specified link item
+  // and as a result, override (temporarily) the current "user" object with
+  // the super administrator user - UID 1.
+  if (1 != $user->uid) {
+    $previous_user = clone $user;
+    $user = user_load(1);
+  }
+
+  $menu_names = menu_get_active_menu_names();
+  array_unshift($menu_names, MENU_PREFERRED_LINK);
+
+  $query = db_select('menu_links', 'ml', array('fetch' => PDO::FETCH_ASSOC));
+  $query->leftJoin('menu_router', 'm', 'm.path = ml.router_path');
+  $query->fields('ml');
+  $query->addField('ml', 'weight', 'link_weight');
+  $query->fields('m');
+  $query = $query->condition('ml.router_path', $router_path)
+    ->condition('ml.module', 'menu');
+  if (!empty($link_path)) {
+    $query->condition('ml.link_path', $link_path);
+  }
+  if (!empty($menu_name)) {
+    $query->condition('ml.menu_name', $selected_menu_name);
+  }
+  $query = $query->groupBy('ml.link_path')
+    ->groupBy('ml.menu_name')
+    ->orderBy('ml.mlid', 'ASC');
+
+  $links = array();
+  foreach ($query->execute() as $candidate) {
+    $candidate['weight'] = $candidate['link_weight'];
+    $links[$candidate['link_path']][$candidate['menu_name']] = $candidate;
+    if (!in_array($candidate['menu_name'], $menu_names)) {
+      $menu_names[] = $candidate['menu_name'];
+    }
+  }
+
+  $preferred_links = array();
+  foreach ($links as $path => $link) {
+    foreach ($menu_names as $menu_name) {
+      if (isset($link[$menu_name])) {
+        $item = $link[$menu_name];
+        $map = explode('/', $item['link_path']);
+        _menu_translate($item, $map);
+        if ($item['access']) {
+          $preferred_links[$item['link_path']][$menu_name] = $item;
+          if (empty($preferred_links[$item['link_path']][MENU_PREFERRED_LINK])) {
+            $preferred_links[$item['link_path']][MENU_PREFERRED_LINK] = $item;
+          }
+        }
+      }
+    }
+  }
+
+  // Reset the global $user if the $previous_user is set and therefore was
+  // overridden with Drupal UID 1.
+  if (isset($previous_user)) {
+    $user = $previous_user;
+  }
+
+  if (!empty($link_path)) {
+    if (!empty($menu_name)) {
+      return isset($preferred_links[$link_path][$selected_menu_name]) ? $preferred_links[$link_path][$selected_menu_name] : FALSE;
+    }
+    return isset($preferred_links[$link_path]) ? $preferred_links[$link_path] : FALSE;
+  }
+
+  return $preferred_links;
+}

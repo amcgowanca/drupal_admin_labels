@@ -1,0 +1,105 @@
+<?php
+/**
+ * @file
+ * admin_labels.install
+ */
+
+/**
+ * Implements hook_install().
+ */
+function admin_labels_install() {
+  module_load_include('module', 'admin_labels');
+  admin_labels_rebuild_menu_link_preferred_label_assignments();
+}
+
+/**
+ * Implements hook_schema().
+ */
+function admin_labels_schema() {
+  $schema = array();
+  $schema['admin_labels_types'] = array(
+    'description' => 'Stores information about the types of administrative labels.',
+    'fields' => array(
+      'lid' => array(
+        'description' => 'The primary key for labels.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'type' => array(
+        'description' => 'The machine name representation for this label.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+      ),
+      'text' => array(
+        'description' => 'The actual label representation as a string.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+      ),
+      'module' => array(
+        'description' => 'The name of the module which this label type originates from.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+      ),
+    ),
+    'primary key' => array('lid'),
+    'unique keys' => array(
+      'type' => array('type'),
+    ),
+    'indexes' => array(
+      'lid_type' => array('lid', 'type'),
+    ),
+  );
+  $schema['admin_labels_assigned_labels'] = array(
+    'description' => 'Stores lookup and map information about assigned labels.',
+    'fields' => array(
+      'id' => array(
+        'description' => 'The primary key.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'created' => array(
+        'description' => 'The timestamp in which the label was assigned on.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'lid' => array(
+        'description' => 'The assigned labels primary key from {admin_labels}.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'type' => array(
+        'description' => 'The data object type (e.g. entity type, menu-link, etc.) the label is assigned too.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+      ),
+      'identifier' => array(
+        'description' => 'The data object identifier (e.g. primary key).',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+    ),
+    'primary key' => array('id'),
+    'indexes' => array(
+      'assignment_created' => array('created'),
+      'label' => array('lid'),
+      'object_type' => array('type'),
+      'object_id' => array('type', 'identifier'),
+    ),
+    'foreign keys' => array(
+      'label' => array(
+        'table' => 'admin_labels_type',
+        'columns' => array('lid' => 'lid'),
+      ),
+    ),
+  );
+  return $schema;
+}
